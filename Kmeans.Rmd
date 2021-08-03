@@ -1,0 +1,304 @@
+---
+title: "Randomly Sampled Set"
+output:
+  pdf_document: default
+  html_document: default
+---
+Many thanks to Alboukadel Kassambara at DataNovia for providing teachings on how to use majority of code in project
+Lessons taken were from links below:
+K-means: https://www.datanovia.com/en/courses/partitional-clustering-in-r-the-essentials/
+DBSCAN: https://www.datanovia.com/en/lessons/dbscan-density-based-clustering-essentials/
+Hierarchical: https://www.datanovia.com/en/lessons/agglomerative-hierarchical-clustering/
+Cluster optimisation: https://www.datanovia.com/en/lessons/determining-the-optimal-number-of-clusters-3-must-know-methods/
+Cluster validaiton: https://www.datanovia.com/en/lessons/cluster-validation-statistics-must-know-methods/
+Cluster Validation cont: https://www.datanovia.com/en/lessons/choosing-the-best-clustering-algorithms/
+Heatmaps: https://www.datanovia.com/en/lessons/heatmap-in-r-static-and-interactive-visualization/
+
+```{r setup, include=FALSE}
+library(dbscan)
+library(tidyr)
+library(tidyverse)
+library(factoextra)
+library(NbClust)
+library(cluster)
+library(dplyr)
+library(gplots)
+library(pheatmap)
+library(ComplexHeatmap)
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+library(Rtsne)
+library(labdsv)
+library(ggplot2)
+library(ggpubr)
+library(vegan)
+library(clValid)
+library(fpc)
+library(data.table)
+library(FactoMineR)
+```
+
+Functions
+```{r, echo = FALSE}
+
+cutter <- function(hcluster, k, original_data) {
+  clustered_data <- original_data %>% 
+    mutate(cluster = cutree(hcluster, k))
+  return(clustered_data)
+}
+
+meltcor <- function(filtered_cluster) {
+    filtered_cluster <- filtered_cluster[, c(1,2,3,4,5,6,7)]
+    filtered_cluster <- round(cor(filtered_cluster, use = "everything"),2)
+    filtered_cluster <- melt(filtered_cluster)
+  return(filtered_cluster)
+}
+chmap <-  function(x) {
+  name <- match.call()
+  hmap <- ggplot(x, aes(x=Var1, y=Var2, fill=value)) + geom_tile() + 
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "light grey", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation") +
+  theme_minimal()+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 12, hjust = 1)) +
+  coord_fixed()+ ggtitle("Heatmap correlation:", name) + 
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 4)
+   return(hmap)
+}
+```
+
+Reading data in & memory size
+``` {r, echo = FALSE}
+#2M
+fulldata <- read.csv('FYP 2M OBS.csv')
+fulldata <- data.table(fulldata)
+
+#100K
+sample005_3 <- read.csv('FYP 100k OBS S3.csv')
+sample005_3 <- as_tibble(sample005_3)
+s005_3df <- scale(sample005_3)
+
+#21K
+sample001_3 <- read.csv('FYP 21k OBS S3.csv')
+sample001_3 <- as_tibble(sample001_3)
+s001_3df <- scale(sample001_3)
+
+
+#Validation sample
+set.seed(124)
+V_sample <- fulldata[sample(.N, 7500)]
+vdf <- scale(V_sample)
+
+```
+
+KMEANS
+``` {r, echo = FALSE}
+set.seed(124)
+gc()
+NbClust(vdf, distance = "euclidean", min.nc = 2, method = "kmeans", index = "silhouette") #2
+vkm <- kmeans(vdf, 2, iter.max = 25, nstart = 1) 
+fviz_cluster(vkm, vdf, geom = "point", ellipse.type = "convex", ggtheme = theme_bw(), main = "K-Means for sample size 7,500")
+
+#21k
+km001_3 <- kmeans(s001_3df, 2, iter.max = 25, nstart = 1)
+fviz_cluster(km001_3, sample001_3, geom = "point", ellipse.type = "convex", ggtheme = theme_bw(), main = "K-Means for sample size ~21,000")
+
+#100k
+km005_3 <- kmeans(s005_3df, 2, iter.max = 25, nstart = 1)
+fviz_cluster(km005_3, sample005_3, geom = "point", ellipse.type = "convex", ggtheme = theme_bw(), main = "K-Means for sample size ~100,000")
+```
+
+KMEANS Heatmaps
+```{r, echo = FALSE}
+#21k~
+km001_3c <- sample001_3 %>% mutate(cluster= km001_3$cluster) %>% group_by(cluster)
+km001_3c <- as_tibble(km001_3c)
+km001_3c1 <- km001_3c %>% filter(cluster == 1)
+km001_3c2 <- km001_3c %>% filter(cluster == 2)
+
+#printing the heatmaps
+ggarrange(chmap(meltcor(km001_3c1)), chmap(meltcor(km001_3c2)), widths = c(1,1), labels = c("Cluster 1", "Cluster 2"))
+
+#100k~
+km005_3c <- sample005_3 %>% mutate(cluster= km005_3$cluster) %>% group_by(cluster)
+km005_3c <- as_tibble(km005_3c)
+km005_3c1 <- km005_3c %>% filter(cluster == 1)
+km005_3c2 <- km005_3c %>% filter(cluster == 2)
+
+#printing the heatmaps
+ggarrange(chmap(meltcor(km005_3c1)), chmap(meltcor(km005_3c2)), widths = c(1,1), labels = c("Cluster 1", "Cluster 2"))
+```
+
+DBSCAN
+``` {r, echo = FALSE}
+set.seed(124)
+#V_sample
+kNNdistplot(vdf, k = 14) %>%
+  abline(h = 2.1, lty = 2) + title("kNN plot for validation sample")
+vdb <- dbscan::dbscan(vdf, eps = 2.1, MinPts = 14)
+fviz_cluster(vdb, vdf, geom = "point", main = "V_Sample Data cluster")
+
+#21K
+kNNdistplot(s001_3df, k = 14) %>%
+  abline(h = 2.3, lty = 2) + title("kNN plot for sample 21k")
+db001_3 <- dbscan::dbscan(s001_3df, eps = 2.3, MinPts = 14)
+fviz_cluster(db001_3, s001_3df, geom = "point", main = "DBSCAN for sample size ~21,000")
+
+#100K
+kNNdistplot(s005_3df, k = 14) %>%
+  abline(h = 2.3, lty = 2) + title("kNN plot for sample 100k")
+db005_3 <- dbscan::dbscan(s005_3df, eps = 2.3, MinPts = 14)
+fviz_cluster(db005_3, s005_3df, geom = "point", main = "Sample005_3 Data cluster")
+```
+
+Heatmap setup DBSCAN
+``` {r, echo = FALSE}
+#validation
+vdbc <- V_sample %>% mutate(cluster= vdb$cluster) %>% group_by(cluster)
+as_tibble(vdbc)
+vdb_0c <- vdbc %>% filter(cluster == 0)
+vdb_1c <- vdbc %>% filter(cluster == 1)
+vdb_2c <- vdbc %>% filter(cluster == 2)
+#21K
+s001_3c <- sample001_3 %>% mutate(cluster= db001_3$cluster) %>% group_by(cluster)
+
+s001_3c <- as_tibble(s001_3c)
+s001_3c0 <- s001_3c %>% filter(cluster == 0)
+s001_3c1 <- s001_3c %>% filter(cluster == 1)
+s001_3c2 <- s001_3c %>% filter(cluster == 2)
+
+#100k
+s005_3c <- sample005_3 %>% mutate(cluster= db005_3$cluster) %>% group_by(cluster)
+
+s005_3c <- as_tibble(s005_3c)
+s005_3c0 <- s005_3c %>% filter(cluster == 0)
+s005_3c1 <- s005_3c %>% filter(cluster == 1)
+s005_3c2 <- s005_3c %>% filter(cluster == 2)
+
+```
+
+DBSCAN Heatmaps
+``` {r, echo = FALSE}
+#Validation set
+ggarrange(chmap(meltcor(vdb_1c)), chmap(meltcor(vdb_2c)), chmap(meltcor(vdb_0c)), widths = c(1,1), labels = c("Cluster 1", "Cluster 2", "Outlier Cluster"))
+
+#21k
+ggarrange(chmap(meltcor(s001_3c1)), chmap(meltcor(s001_3c2)), chmap(meltcor(s001_3c0)), widths = c(1,1), labels = c("Cluster 1", "Cluster 2", "Outlier Cluster"))
+
+#100k
+ggarrange(chmap(meltcor(s005_3c1)), chmap(meltcor(s005_3c2)), chmap(meltcor(s005_3c0)), widths = c(1,1), labels = c("Cluster 1", "Cluster 2", "Outlier Cluster"))
+
+```
+
+HIERARCHICAL
+``` {r, echo = FALSE}
+set.seed(124)
+#Validation sample
+fviz_nbclust(vdf, hcut, method = "silhouette", k.max = 10) #sil = 3,
+
+Vdist <- dist(vdf, method = "manhattan")
+
+hcv <- hclust(Vdist, method = "ward.D2")
+
+hcv_c <- cutter(hcv, 2, V_sample)
+sub_hcv <- cutree(hcv, 2)
+
+fviz_cluster(list(data = vdf, cluster = sub_hcv, main = "Ward clustering validation"))
+fviz_nbclust(s001_3df, hcut, method = "silhouette", k.max = 10)
+
+#validation sample heatmap
+hcv_c <- as_tibble(hcv_c)
+hcv_c1 <- hcv_c %>% filter(cluster == 1) 
+hcv_c2 <- hcv_c %>% filter(cluster == 2)
+
+ggarrange(chmap(meltcor(hcv_c1)), chmap(meltcor(hcv_c2)), chmap(meltcor(hcv_c3)),
+          labels = c("Cluster 1", "Cluster 2"), widths = c(1,1) )
+
+#21k sample
+dis001_3 <- dist(s001_3df, method = "manhattan")
+
+#clustering
+hc001_3 <- hclust(dis001_3, method = "ward.D2")
+
+#cutting
+hc001_3c <- cutter(hc001_3, 2, sample001_3)
+sub001_3 <- cutree(hc001_3, 2)
+
+#plots
+fviz_cluster(list(data = s001_3df, cluster = sub001_3), main = "Hierarchical for sample size ~21,000")
+
+#Heatmaps
+hc001_3c <- as_tibble(hc001_3c)
+hc001_3c1 <- hc001_3c %>% filter(cluster == 1) 
+hc001_3c2 <- hc001_3c %>% filter(cluster == 2)
+
+ggarrange(chmap(meltcor(hc001_3c1)), chmap(meltcor(hc001_3c2)), 
+          labels = c("Cluster 1", "Cluster 2"), ncol = 2, nrow = 1)
+```
+
+ggPlots
+``` {r, echo = FALSE}
+ggplot(s001_3c1, aes(DateKey, PriceVsMax)) + geom_jitter()
+ggplot(s001_3c1, aes(PriceVsMax, DateKey)) + geom_jitter()
+s001_3c1<- as.data.table(s001_3c1)
+s001_3c1[,.N, by=s001_3c1$PriceVsMax]
+
+
+ggplot(hc001_3c2, aes(DateKey, PriceVsMax)) + geom_bar(stat = "identity")
+ggplot(hc001_3c2, aes(PriceVsMax, Forecast)) + geom_jitter() + geom_smooth()+ ggtitle("Forecast vs PriceVsMax DBSCAN Cluster 2")
+ggplot(hc001_3c2, aes(DateKey, PriceVsMax)) + geom_jitter() + geom_smooth(method = "lm", se = FALSE) + ylim(0,1)+ ggtitle("PriceVsMax vs DateKey Hierarchical Cluster 2")
+ggplot(hc001_3c2, aes(PriceVsMax, Forecast)) +geom_jitter() + geom_smooth(method = "lm", se = FALSE) + ylim(0,1.5)+ ggtitle("Forecast vs PriceVsMax Hierarchical Cluster 2")
+
+s001_3c2<- as.data.table(s001_3c2)
+s001_3c2[,.N, by=s001_3c2$PriceVsMax]
+s001_3c2[,.N, by=s001_3c2$Forecast]
+
+```
+
+Validation
+``` {r, echo = FALSE}
+#Internal validation (Dunn/silhouette)
+#Kmeans
+kmstats <- cluster.stats(dist(vdf), vkm$cluster)
+kmstats1 <- cluster.stats(dist(s001_3df), km001_3$cluster)
+kmstats$dunn
+sil_vk <- silhouette(vkm$cluster, dist(vdf, "euclidean"))
+fviz_silhouette(sil_vk)
+sil_21k <- silhouette(km001_3$cluster, dist(s001_3df, "euclidean")) 
+fviz_silhouette(sil_21k)
+
+#DBSCAN
+dbstats <- cluster.stats(dist(vdf), vdb$cluster)
+dbstats$dunn
+sil_vd <- silhouette(vdb$cluster, dist(vdf, "euclidean"))
+fviz_silhouette(sil_vd)
+sil_21kd <- silhouette(db001_3$cluster, dist(s001_3df, "euclidean")) 
+fviz_silhouette(sil_21kd)
+
+#Hierarhical
+hcstats <- cluster.stats(dist(vdf), hcv_c$cluster)
+hcstats$dunn
+sil_vh <- silhouette(hcv_c$cluster, dist(vdf, "manhattan"))
+fviz_silhouette(sil_vh)
+sil_21kh <- silhouette(hc001_3c$cluster, dist(s001_3df, "manhattan")) 
+fviz_silhouette(sil_21kh)
+
+#clValid (cluster comparison)
+clMethods <- c("kmeans", "hierarchical")
+rownames(vdf) <- NULL
+intern_kh <- clValid(vdf, nClust = 2:4, clMethods = clMethods, validation = "internal", maxitems = 7500)
+stab_kh <- clValid(vdf, nClust = 2:4, clMethods = clMethods, validation = "stability", maxitems = 7500)
+
+optimalScores(intern_kh)
+optimalScores(stab_kh)
+
+
+#Dimension description
+s001.desc <- PCA(sample001_3, graph = FALSE)
+res.desc <- dimdesc(s001.desc, axes = c(1,2), proba = 0.05)
+res.desc$Dim.1
+res.desc$Dim.2
+
+```
